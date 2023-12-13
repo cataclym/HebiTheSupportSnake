@@ -1,22 +1,31 @@
 import {
     type Awaitable,
-    type CacheType,
     Client,
     Collection, Events,
     GatewayIntentBits,
     type Interaction,
-    type Snowflake
+    type Snowflake,
+    REST,
+    Routes,
+    SlashCommandBuilder, type ChatInputCommandInteraction
 } from "discord.js"
 import * as path from "path"
 import * as fs from "fs"
-import type SlashCommand from "./slashCommand"
+import SlashCommand from "./slashCommand"
+import Sqlite from "./db/sqlite"
+import NadekoCommand from "./NadekoCommand"
 
-export class HebiClient extends Client {
-    serverID: string
-    helpChannelID: string
-    slashCommands!: Collection<string, SlashCommand>
+export class HebiClient extends Client<true> {
+    private readonly serverID: Snowflake
+    private helpChannelID: Snowflake
+    private slashCommands!: Collection<string, SlashCommand>
+    SQLite: Sqlite
+    private readonly _jsonURL: string
+    public nadekoCommands!: {
+        [category: string]: NadekoCommand[]
+    }
 
-    constructor (botToken: string, serverID: Snowflake, helpChannelID: Snowflake) {
+    public constructor(botToken: string, serverID: Snowflake, helpChannelID: Snowflake, jsonURL: string) {
         super({
             intents: [
                 GatewayIntentBits.Guilds
@@ -25,15 +34,26 @@ export class HebiClient extends Client {
 
         this.serverID = serverID
         this.helpChannelID = helpChannelID
+        this._jsonURL = jsonURL
 
-        this.loadCommands()
+        this.SQLite = new Sqlite()
 
-        this.on(Events.InteractionCreate, async (i) => { await this.handleInteraction(i) })
+        this.on(Events.InteractionCreate, async (i) => {
+            await this.handleInteraction(i)
+        })
 
         void this.login(botToken)
+
     }
 
-    private async handleInteraction (interaction: Interaction<CacheType>): Promise<Awaitable<void>> {
+    async login(botToken: string) {
+        const str = await super.login(botToken)
+        await this.fetchNadekoCommands()
+        await this.deployCommands()
+        return str
+    }
+
+    private async handleInteraction(interaction: Interaction): Promise<Awaitable<void>> {
         if (!interaction.isChatInputCommand()) return
 
         const command = interaction.client.slashCommands.get(interaction.commandName)
@@ -48,14 +68,17 @@ export class HebiClient extends Client {
         } catch (error) {
             console.error(error)
             if (interaction.replied || interaction.deferred) {
-                await interaction.followUp({ content: "There was an error while executing this command!", ephemeral: true })
+                await interaction.followUp({
+                    content: "There was an error while executing this command!",
+                    ephemeral: true
+                })
             } else {
                 await interaction.reply({ content: "There was an error while executing this command!", ephemeral: true })
             }
         }
     }
 
-    private loadCommands (): void {
+    private async loadCommands(): Promise<void> {
         this.slashCommands = new Collection<string, SlashCommand>()
 
         const foldersPath = path.join(__dirname, "slashCommands")
@@ -63,14 +86,44 @@ export class HebiClient extends Client {
 
         for (const file of commandFiles) {
             const filePath = path.join(foldersPath, file)
-            const command: SlashCommand = require(filePath)
+            const { data, execute }: {
+                data: (client: HebiClient) => SlashCommandBuilder | Promise<SlashCommandBuilder>,
+                execute: (i: ChatInputCommandInteraction) => any
+            } = require(filePath).default
 
-            // Set a new item in the Collection with the key as the command name and the value as the exported module
-            if ("data" in command && "execute" in command) {
-                this.slashCommands.set(command.data.name, command)
+            if (data && execute) {
+
+                const slashCommand = new SlashCommand(await data(this), execute)
+                this.slashCommands.set(slashCommand.data.name, slashCommand)
+
             } else {
                 console.log(`[WARNING] The command at ${filePath} is missing a required "data" or "execute" property.`)
             }
         }
+    }
+
+    private async deployCommands() {
+
+        const body = this.slashCommands.map(cmd => cmd.data.toJSON())
+
+        const rest = new REST().setToken(this.token)
+
+        console.log(`Started refreshing ${body.length} application (/) commands.`)
+
+        await rest.put(
+            Routes.applicationGuildCommands(this.user.id, this.serverID),
+            { body },
+        )
+        console.log("Finished refreshing (/) commands.")
+    }
+
+    private async fetchNadekoCommands() {
+        const res = await fetch(this._jsonURL)
+
+        if (!res.ok) throw new Error(`${res.url} ${res.statusText}`)
+
+        this.nadekoCommands = await res.json()
+
+        await this.loadCommands()
     }
 }

@@ -1,9 +1,9 @@
 import "dotenv/config"
 import { HebiClient } from "./hebiClient"
-import "./hebi.d.ts"
+import "./Discord"
 
-const { BOT_TOKEN, SERVER_ID, HELP_CHANNEL_ID } = process.env
+const { BOT_TOKEN, SERVER_ID, HELP_CHANNEL_ID, COMMAND_JSON } = process.env
 
-if ((BOT_TOKEN == null) || (SERVER_ID == null) || (HELP_CHANNEL_ID == null)) throw new Error("Missing value in .env")
+if ((BOT_TOKEN == null) || (SERVER_ID == null) || (HELP_CHANNEL_ID == null) || (COMMAND_JSON == null)) throw new Error("Missing value in .env")
 
-new HebiClient(BOT_TOKEN, SERVER_ID, HELP_CHANNEL_ID)
+new HebiClient(BOT_TOKEN, SERVER_ID, HELP_CHANNEL_ID, COMMAND_JSON)
